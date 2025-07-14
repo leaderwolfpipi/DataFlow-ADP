@@ -1,5 +1,6 @@
 import importlib
 import importlib.util
+import sys
 import types
 import os
 from dataflow.logger import get_logger
@@ -7,6 +8,28 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
+
+import ast
+from pathlib import Path
+
+def generate_import_structure_from_type_checking(source_file: str, base_path: str) -> dict:
+    source = Path(source_file).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    import_structure = {}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If) and getattr(node.test, 'id', '') == 'TYPE_CHECKING':
+            for subnode in node.body:
+                if isinstance(subnode, ast.ImportFrom):
+                    module_rel = subnode.module.replace(".", "/")
+                    for alias in subnode.names:
+                        name = alias.name
+                        module_file = str(Path(base_path) / f"{module_rel}.py")
+                        import_structure[name] = (module_file, name)
+
+    return import_structure
+
 
 class Registry():
     """
@@ -34,13 +57,20 @@ class Registry():
         BACKBONE_REGISTRY.register(MyBackbone)
     """
 
-    def __init__(self, name):
+    def __init__(self, name, sub_modules: list[str] = []):
         """
         Args:
             name (str): the name of this registry
         """
         self._name = name
         self._obj_map = {}
+        if len(sub_modules) > 0:
+            self.loader_map = dict(zip(sub_modules, [None] * len(sub_modules)))
+        
+    def _init_loaders(self):
+        for module_name in self.loader_map.keys():
+            module_path = f"dataflow.{self._name}.{module_name}"
+            self.loader_map[module_name] = importlib.import_module(module_path)
 
     def _do_register(self, name, obj):
         if name not in self._obj_map:
@@ -69,21 +99,22 @@ class Registry():
         ret = self._obj_map.get(name)
         logger = get_logger()
         if ret is None:
-            if self._name == 'operator': 
-                for x in ['eval', 'generate', 'process', 'refine']:
-                    module_path = "dataflow.operators." + x
-                    try:
-                        module_lib = importlib.import_module(module_path)
-                        clss = getattr(module_lib, name)
-                        self._obj_map[name] = clss
-                        return clss
-                    except AttributeError as e:
-                        logger.debug(f"{str(e)}")
-                        continue
-                    except Exception as e:
-                        raise e
-                logger.error(f"No object named '{name}' found in '{self._name}' registry!")
-                raise KeyError(f"No object named '{name}' found in '{self._name}' registry!")
+            if None in self.loader_map.values():
+                self._init_loaders()
+            for module_lib in self.loader_map.values():
+                # module_path = "dataflow.operators." + x
+                try:
+                    # module_lib = importlib.import_module(module_path)
+                    clss = getattr(module_lib, name)
+                    self._obj_map[name] = clss
+                    return clss
+                except AttributeError as e:
+                    logger.debug(f"{str(e)}")
+                    continue
+                except Exception as e:
+                    raise e
+            logger.error(f"No object named '{name}' found in '{self._name}' registry!")
+            raise KeyError(f"No object named '{name}' found in '{self._name}' registry!")
 
         if ret is None:
             logger.error(f"No object named '{name}' found in '{self._name}' registry!")
@@ -114,13 +145,56 @@ class Registry():
 
         return capture.get()
 
+    def _get_all(self):
+        if None in self.loader_map.values():
+            self._init_loaders()
+        for loader in self.loader_map.values():
+            loader._import_all()
+
     def get_obj_map(self):
         """
         Get the object map of the registry.
         """
         return self._obj_map
+    
+    def get_type_of_operator(self):
+        """
+        Classify the operator type by its path of registration.
+        This is used to classify operators into different categories.
+        :return: A dictionary with operator type as keys and their name as values.
+        """
+        # eval operators
+        eval_operators = []
+        filter_operators = []
+        generate_operators = []
+        refine_operators = []
+        conversations_operators = []
+        db_operators = []
 
-OPERATOR_REGISTRY = Registry('operator')
+        for name, obj in self._obj_map.items():
+            if 'eval' in obj.__module__:
+                eval_operators.append(name)
+            elif 'filter' in obj.__module__:
+                filter_operators.append(name)
+            elif 'generate' in obj.__module__:
+                generate_operators.append(name)
+            elif 'refine' in obj.__module__:
+                refine_operators.append(name)
+            elif 'conversations' in obj.__module__:
+                conversations_operators.append(name)
+            elif 'db' in obj.__module__:
+                db_operators.append(name)
+
+        return {
+            'eval': eval_operators,
+            'filter': filter_operators,
+            'generate': generate_operators,
+            'refine': refine_operators,
+            'conversations': conversations_operators,
+            'db': db_operators
+        }
+
+OPERATOR_REGISTRY = Registry(name='operators', sub_modules=['eval', 'filter', 'generate', 'refine', 'conversations'])
 class LazyLoader(types.ModuleType):
 
     def __init__(self, name, path, import_structure):
@@ -135,6 +209,11 @@ class LazyLoader(types.ModuleType):
         self._loaded_classes = {}
         self._base_folder = Path(__file__).resolve().parents[2]
         self.__path__ = [path]
+        self.__all__ = list(import_structure.keys())
+        
+    def _import_all(self):
+        for cls_name in self.__all__:
+            self.__getattr__(cls_name)
 
     def _load_class_from_file(self, file_path, class_name):
         """
@@ -144,15 +223,27 @@ class LazyLoader(types.ModuleType):
         :param class_name: 类的名字
         :return: 类对象
         """
-        abs_file_path = os.path.join(self._base_folder, file_path)
+        p = Path(file_path)
+        if p.is_absolute():
+            abs_file_path = str(p)
+        else:
+            abs_file_path = str(Path(self._base_folder) / p)
         if not os.path.exists(abs_file_path):
-            raise FileNotFoundError(f"File {abs_file_path} does not exist")
+            raise FileNotFoundError(abs_file_path)
+        rel_path = Path(abs_file_path).relative_to(self._base_folder)
+        # 去掉后缀得到 ('dataflow', 'operators', 'generate', ... , 'question_generator')
+        rel_parts = rel_path.with_suffix('').parts
+        prefix_parts = tuple(self.__name__.split('.'))
+        if rel_parts[:len(prefix_parts)] == prefix_parts:
+            rel_parts = rel_parts[len(prefix_parts):]
+        mod_name = '.'.join((*prefix_parts, *rel_parts))
         logger = get_logger()
         # 动态加载模块
         try:
-            spec = importlib.util.spec_from_file_location(class_name, abs_file_path)
+            spec = importlib.util.spec_from_file_location(mod_name, abs_file_path)
             logger.debug(f"LazyLoader {self.__path__} successfully imported spec {spec.__str__()}")
             module = importlib.util.module_from_spec(spec)
+            sys.modules[mod_name] = module
             logger.debug(f"LazyLoader {self.__path__} successfully imported module {module.__str__()} from spec {spec.__str__()}")
             spec.loader.exec_module(module)
         except Exception as e:
