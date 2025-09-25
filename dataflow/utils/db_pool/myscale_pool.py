@@ -4,18 +4,18 @@ import time
 from contextlib import contextmanager
 from typing import Generator, Optional
 
-from clickhouse_driver import Client
-from clickhouse_driver.errors import Error as ClickHouseError
-
 logger = logging.getLogger(__name__)
 
-class ClickHousePoolError(Exception):
-    """Base exception for ClickHouse pool."""
 
-class TooManyConnections(ClickHousePoolError):
-    """Raised when the pool is exhausted."""
 
 class ClickHouseConnectionPool:
+
+    class ClickHousePoolError(Exception):
+        """Base exception for ClickHouse pool."""
+
+    class TooManyConnections(ClickHousePoolError):
+        """Raised when the pool is exhausted."""
+
     def __init__(
         self,
         host: str,
@@ -29,6 +29,13 @@ class ClickHouseConnectionPool:
         connect_timeout: int = 10,
         **kwargs
     ):
+        # Lazy import to avoid dependency if not used
+        try:
+            from clickhouse_driver import Client
+            from clickhouse_driver.errors import Error as ClickHouseError
+        except ImportError as e:
+            raise ImportError("clickhouse-driver is required for ClickHouseConnectionPool, please install it via `pip install clickhouse-driver`") from e
+        
         self._config = {
             "host": host,
             "port": port,
