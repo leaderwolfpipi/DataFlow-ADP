@@ -33,6 +33,9 @@ class ClickHouseConnectionPool:
         try:
             from clickhouse_driver import Client
             from clickhouse_driver.errors import Error as ClickHouseError
+            # Store references for use in other methods
+            self._Client = Client
+            self._ClickHouseError = ClickHouseError
         except ImportError as e:
             raise ImportError("clickhouse-driver is required for ClickHouseConnectionPool, please install it via `pip install clickhouse-driver`") from e
         
@@ -65,8 +68,8 @@ class ClickHouseConnectionPool:
     def _create_connection(self):
         try:
             self._total_created += 1
-            return Client(**self._config)
-        except ClickHouseError as e:
+            return self._Client(**self._config)
+        except self._ClickHouseError as e:
             logger.error("Failed to create ClickHouse client: %s", e)
             raise
 
