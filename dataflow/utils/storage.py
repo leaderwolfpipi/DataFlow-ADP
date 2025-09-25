@@ -278,7 +278,7 @@ class FileStorage(DataFlowStorage):
     
 from threading import Lock
 import math
-from dataflow.utils.myscale_pool import ClickHouseConnectionPool
+from dataflow.utils.db_pool.myscale_pool import ClickHouseConnectionPool
 
 # 推荐在模块级别创建全局池
 myscale_pool = None
@@ -482,3 +482,11 @@ class MyScaleDBStorage(DataFlowStorage):
             self.logger.info(f"Inserting {len(values)} rows into {self.table}")
             client.execute(insert_sql, values)
             return f"Inserted {len(values)} rows into {self.table}"
+
+    def get_keys_from_dataframe(self) -> list[str]:
+        """
+        Get keys from the dataframe stored in MyScale/ClickHouse database.
+        Returns column names from the dataframe after reading from database.
+        """
+        dataframe = self.read(output_type="dataframe")
+        return dataframe.columns.tolist() if isinstance(dataframe, pd.DataFrame) else []
