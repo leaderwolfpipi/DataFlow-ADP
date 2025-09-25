@@ -62,7 +62,7 @@ class ClickHouseConnectionPool:
         for _ in range(self._min):
             self._pool.append(self._create_connection())
 
-    def _create_connection(self) -> Client:
+    def _create_connection(self):
         try:
             self._total_created += 1
             return Client(**self._config)
@@ -70,14 +70,14 @@ class ClickHouseConnectionPool:
             logger.error("Failed to create ClickHouse client: %s", e)
             raise
 
-    def _is_connection_alive(self, client: Client) -> bool:
+    def _is_connection_alive(self, client) -> bool:
         try:
             client.execute("SELECT 1")
             return True
         except Exception:
             return False
 
-    def _get_connection(self) -> Client:
+    def _get_connection(self):
         with self._cond:
             while True:
                 if self._closed:
@@ -99,7 +99,7 @@ class ClickHouseConnectionPool:
 
                 self._cond.wait(timeout=10)
 
-    def _release_connection(self, client: Client, close: bool = False):
+    def _release_connection(self, client, close: bool = False):
         with self._cond:
             self._in_use_connections -= 1
             
@@ -122,7 +122,7 @@ class ClickHouseConnectionPool:
         return self._in_use_connections
 
     @contextmanager
-    def get_connection(self) -> Generator[Client, None, None]:
+    def get_connection(self):
         conn = None
         try:
             conn = self._get_connection()
